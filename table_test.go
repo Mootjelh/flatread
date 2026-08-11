@@ -68,7 +68,7 @@ func sample() []byte {
 	u32(vecPos+8, 2)
 	u32(vecPos+12, 3)
 
-	// One vtable, shared by both element tables — which is what a real encoder
+	// One vtable, shared by both element tables, which is what a real encoder
 	// does when two tables have the same shape.
 	u16(elemVT+0, 6)
 	u16(elemVT+2, 8)
@@ -269,7 +269,7 @@ func TestGuess(t *testing.T) {
 // never types.
 func TestGuessCannotSeeElementWidth(t *testing.T) {
 	if got := rootOf(t).Guess(8); got != KindBytes {
-		t.Errorf("Guess(8) = %v, want %v — see the doc comment before changing this", got, KindBytes)
+		t.Errorf("Guess(8) = %v, want %v (see the doc comment before changing this)", got, KindBytes)
 	}
 }
 

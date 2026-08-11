@@ -6,7 +6,7 @@ import (
 
 // Kind is a guess at what a field holds.
 //
-// FlatBuffers does not record field types in the buffer — the schema carries
+// FlatBuffers does not record field types in the buffer. The schema carries
 // them, and a schema is exactly what you do not have here. So [Table.Guess]
 // leans entirely on structure: a length prefix that fits, bytes that are all
 // printable, a known magic number, an offset that resolves to a readable
@@ -139,7 +139,7 @@ func plausibleTable(buf []byte, pos uint32) bool {
 	}
 	size := binary.LittleEndian.Uint16(buf[vt:])
 	// A vtable is at least its own 4-byte header, and 512 bytes would be 254
-	// fields — large enough for anything real, small enough to reject noise.
+	// fields: large enough for anything real, small enough to reject noise.
 	return size >= 4 && size < 512 && int(vt)+int(size) <= len(buf)
 }
 
@@ -160,7 +160,7 @@ func isPrintableRun(b []byte) bool {
 // present.
 //
 // This only inspects the header. To actually decode one, hand the bytes to a
-// Roaring library — this package deliberately has no dependencies.
+// Roaring library. This package deliberately has no dependencies.
 func LooksRoaring(b []byte) bool {
 	if len(b) < 8 {
 		return false

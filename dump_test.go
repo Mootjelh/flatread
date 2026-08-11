@@ -39,7 +39,7 @@ func TestDumpMalformedBufferDescribesTheError(t *testing.T) {
 }
 
 // selfReferential builds a buffer whose only field points back at the table it
-// lives in. Nothing forbids this — an encoder would not emit it, but a corrupt
+// lives in. Nothing forbids this. An encoder would not emit it, but a corrupt
 // file or a hostile one can, and a naive walker recurses forever.
 func selfReferential() []byte {
 	const (

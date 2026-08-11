@@ -2,8 +2,8 @@
 //
 // The normal FlatBuffers workflow compiles a .fbs schema into generated
 // accessors, and field names live in that generated code. When you are handed
-// a binary payload without its schema — reverse engineering a protocol,
-// inspecting a capture, triaging a corrupt file — there is nothing to generate
+// a binary payload without its schema (reverse engineering a protocol,
+// inspecting a capture, triaging a corrupt file) there is nothing to generate
 // from, and the standard library is of no help.
 //
 // This package reads a buffer positionally instead: fields are addressed by
@@ -38,7 +38,7 @@
 // nobody has validated, so malformed input is the expected case and not an
 // exceptional one. The fuzz test in this package asserts it.
 //
-// The cost of that choice is that a zero value is ambiguous — it means either
+// The cost of that choice is that a zero value is ambiguous. It means either
 // "the field holds zero" or "there is no such field". Use [Table.Has] when the
 // difference matters.
 package flatread
@@ -64,7 +64,7 @@ type Table struct {
 //
 // It fails only when the buffer is too small to hold a root offset, or when
 // that offset points outside the buffer. It does NOT validate the rest of the
-// buffer — that is what the accessors' bounds checks are for.
+// buffer. That is what the accessors' bounds checks are for.
 func Root(buf []byte) (Table, error) {
 	if len(buf) < 8 {
 		return Table{}, fmt.Errorf("flatread: buffer too small (%d bytes, need at least 8)", len(buf))
@@ -78,7 +78,7 @@ func Root(buf []byte) (Table, error) {
 
 // TableAtOffset returns the table at an absolute byte position in buf.
 //
-// Use it when you already know where a table starts — for instance when a
+// Use it when you already know where a table starts, for instance when a
 // size-prefixed buffer puts the root somewhere other than offset 0, or when
 // you are re-entering a buffer at a position [Table.Pos] gave you earlier.
 func TableAtOffset(buf []byte, pos uint32) (Table, error) {
@@ -182,8 +182,8 @@ func (t Table) Slots() []uint16 {
 // Has reports whether the field is present, as distinct from present and zero.
 //
 // FlatBuffers omits fields equal to their default, so a writer that stored 0
-// may well have written nothing at all. Has cannot recover that distinction —
-// it reports what is in the buffer, which is the most anyone can know.
+// may well have written nothing at all. Has cannot recover that distinction.
+// It reports what is in the buffer, which is the most anyone can know.
 func (t Table) Has(slot uint16) bool { return t.offset(slot) != 0 }
 
 // --- scalars ----------------------------------------------------------------

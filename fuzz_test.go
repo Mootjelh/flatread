@@ -6,8 +6,8 @@ import "testing"
 // however malformed, makes an accessor panic.
 //
 // That matters more here than in most libraries. A schema-less reader is by
-// definition pointed at bytes nobody has validated — a capture, a truncated
-// file, a payload from a service that changed shape overnight — so malformed
+// definition pointed at bytes nobody has validated: a capture, a truncated
+// file, a payload from a service that changed shape overnight. So malformed
 // input is the ordinary case. Every accessor is therefore bounds-checked and
 // returns a zero value, and this is what keeps that true.
 //

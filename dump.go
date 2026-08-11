@@ -63,8 +63,8 @@ func DumpWith(buf []byte, opts DumpOptions) string {
 }
 
 func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opts DumpOptions) {
-	// The seen set is not just an optimisation. Nothing stops a buffer — whether
-	// by corruption or by design — from containing an offset cycle, and without
+	// The seen set is not just an optimisation. Nothing stops a buffer, whether
+	// by corruption or by design, from containing an offset cycle, and without
 	// this the walk would not terminate on one.
 	if depth > opts.maxDepth() || seen[t.pos] {
 		return

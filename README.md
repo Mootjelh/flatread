@@ -1,24 +1,24 @@
 # flatread
 
+[![CI](https://github.com/Mootjelh/flatread/actions/workflows/ci.yml/badge.svg)](https://github.com/Mootjelh/flatread/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Mootjelh/flatread.svg)](https://pkg.go.dev/github.com/Mootjelh/flatread)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Mootjelh/flatread)](https://goreportcard.com/report/github.com/Mootjelh/flatread)
 
-Read FlatBuffers buffers you have **no schema** for.
+Read FlatBuffers buffers when you don't have the schema.
 
-No dependencies. Never panics, on any input.
+No dependencies. Every accessor is bounds-checked, so malformed input returns a zero value instead of panicking.
 
 ## Why
 
-The normal FlatBuffers workflow compiles a `.fbs` schema into generated accessors, and the field names live in that generated code. When you are handed a binary payload *without* its schema, there is nothing to generate from and the official library cannot help you — it needs the types you are trying to work out.
+The normal FlatBuffers workflow compiles a `.fbs` schema into generated accessors, and the field names live in that generated code. If you're handed a binary payload without its schema there's nothing to generate from, and the official library can't help, because it needs the types you're trying to work out.
 
-That happens more often than the docs suggest:
+That comes up more often than the docs suggest:
 
-- reverse engineering a protocol from a capture
-- inspecting a payload from a service whose schema is not published
-- triaging a file that decodes on one machine and not another
-- checking what an SDK actually sends, rather than what its docs claim
+* reverse engineering a protocol from a capture
+* inspecting a payload from a service that doesn't publish its schema
+* triaging a file that decodes on one machine but not another
+* checking what an SDK actually sends, rather than what its docs claim
 
-`flatread` reads a buffer **positionally**: fields are addressed by vtable slot number instead of by name. That is enough to walk an unknown buffer, and enough to write a real decoder once you have worked out which slot means what.
+flatread reads a buffer positionally. Fields are addressed by vtable slot number instead of by name. That's enough to walk an unknown buffer, and enough to write a real decoder once you've worked out which slot means what.
 
 ## Install
 
@@ -49,7 +49,7 @@ root @0x40 (168 bytes)
       slot 4   scalar   u32=22 u16=22 u8=22
 ```
 
-It reads stdin when given no file, so it drops straight into a pipeline:
+It reads stdin when given no file, so it drops into a pipeline:
 
 ```bash
 curl -s https://example.com/payload | flatdump -depth 8
@@ -81,7 +81,7 @@ for i := 0; i < root.VectorLen(12); i++ {
 }
 ```
 
-Scalars (`Byte`, `Bool`, `Int8`…`Int64`, `Uint16`…`Uint64`, `Float32`, `Float64`), strings, byte vectors, numeric vectors, nested tables and vectors of tables. `Has` distinguishes an absent field from one that is present and zero.
+Scalars (`Byte`, `Bool`, `Int8` through `Int64`, `Uint16` through `Uint64`, `Float32`, `Float64`), strings, byte vectors, numeric vectors, nested tables and vectors of tables. `Has` distinguishes an absent field from one that's present and zero.
 
 ## How a buffer is laid out
 
@@ -92,46 +92,44 @@ buf[0:4]                 uoffset to the root table
 
 table[-soffset]          the table's vtable. soffset is a SIGNED int32
                          stored at the table's own position, so the
-                         vtable normally sits BEFORE the table
+                         vtable normally sits before the table
 vtable[0:2]              vtable size in bytes
 vtable[2:4]              inline table size in bytes
 vtable[4+2i : 6+2i]      byte offset of field i inside the table,
                          0 meaning absent
 ```
 
-So **field _i_ lives at slot number `4+2i`**: the first field is slot 4, the second slot 6, the third slot 8. Slot numbers are what you pass to every accessor — they are the only stable handle you have without a schema.
+Field `i` lives at slot number `4+2i`, so the first field is slot 4, the second slot 6, the third slot 8. Slot numbers are what you pass to every accessor. Without a schema they're the only stable handle you have.
 
-Offsets to strings, vectors and nested tables are `uoffset`s: unsigned, and relative to the position of the offset itself.
+Offsets to strings, vectors and nested tables are uoffsets: unsigned, and relative to the position of the offset itself.
 
-## What it deliberately does not do
+## Limitations
 
-**It cannot recover types, only structure.** `Guess` reads a length prefix that fits, a run of printable bytes, a known magic number, an offset that resolves to a readable vtable. That is genuinely all the information in the buffer.
+flatread recovers structure, not types. `Guess` works from a length prefix that fits, a run of printable bytes, a known magic number, or an offset that resolves to a readable vtable. That's genuinely all the information the buffer holds.
 
-The sharpest consequence, pinned by a test so it does not get "fixed":
+The clearest consequence, which has a test pinning it so it doesn't get "fixed" later: a vector of `uint32{1, 2, 3}` and the twelve bytes that encode it are the same twelve bytes, so `Guess` reports `bytes`. Nothing in a FlatBuffers buffer records a vector's element width.
 
-> A vector of `uint32{1, 2, 3}` and the twelve bytes that encode it **are the same twelve bytes.** `Guess` reports `bytes`. Nothing records a vector's element width.
+So use `Guess` to find the slots you care about, confirm each one against real data, then read them with the typed accessors. Don't build a decoder on it.
 
-Use `Guess` to find the slots you care about, confirm each against real data, then read them with the typed accessors. Do not build a decoder on it.
-
-It also does not **write** buffers. Use the [official library](https://github.com/google/flatbuffers) for that — once you know the schema, you should be generating code from it anyway.
+flatread also doesn't write buffers. Use the [official library](https://github.com/google/flatbuffers) for that. Once you know the schema you should be generating code from it anyway.
 
 ## Safety
 
-Every accessor is bounds-checked and returns a zero value rather than panicking, because this package is by definition pointed at bytes nobody has validated. Malformed input is the ordinary case here, not an exceptional one.
+Every accessor is bounds-checked and returns a zero value rather than panicking. This package is by definition pointed at bytes nobody has validated, so malformed input is the ordinary case here, not an exceptional one.
 
-That property is enforced, not asserted:
+That property is enforced rather than claimed:
 
 ```bash
 go test -fuzz=FuzzReader
 ```
 
-The fuzz target walks every accessor over arbitrary input, including offset cycles — a buffer whose field points back at its own table, which an encoder would never emit but a corrupt or hostile file certainly can.
+The fuzz target walks every accessor over arbitrary input, including offset cycles: a buffer whose field points back at its own table, which an encoder would never emit but a corrupt or hostile file can. CI runs a 60-second pass on every push.
 
-The trade-off is that a zero return is ambiguous: it means either "the field holds zero" or "there is no such field". Use `Has` when the difference matters.
+The trade-off is that a zero return is ambiguous. It means either "the field holds zero" or "there is no such field". Use `Has` when the difference matters.
 
 ## Roaring bitmaps
 
-Byte vectors carrying a [RoaringBitmap](https://roaringbitmap.org/) serial cookie are recognised and labelled, since Roaring turns up often in search and analytics payloads. Decoding one needs a dependency this package does not take — use the `Annotate` hook:
+Byte vectors carrying a [RoaringBitmap](https://roaringbitmap.org/) serial cookie are recognised and labelled, since Roaring turns up often in search and analytics payloads. Decoding one needs a dependency this package doesn't take, so there's a hook for it:
 
 ```go
 flatread.DumpWith(buf, flatread.DumpOptions{
