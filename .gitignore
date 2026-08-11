@@ -1,0 +1,16 @@
+# Binaries
+bin/
+flatdump
+flatdump.exe
+*.exe
+*.test
+
+# Go
+testdata/fuzz/
+vendor/
+*.out
+
+# Local scratch — never commit sample payloads, they may not be yours to share
+*.bin
+*.har
+scratch/
