@@ -76,6 +76,73 @@ func Root(buf []byte) (Table, error) {
 	return Table{buf: buf, pos: root}, nil
 }
 
+// RootSizePrefixed returns the root table of a size-prefixed buffer.
+//
+// The size-prefixed layout puts a uint32 byte count in front of an otherwise
+// ordinary buffer, so that a reader taking bytes off a stream knows where one
+// message ends. gRPC uses it, and so does anything that stores several buffers
+// back to back in one file.
+//
+// Passing such a buffer to [Root] does not fail loudly. Root reads the size as
+// the root offset, and what happens next depends on the number: usually an
+// error, sometimes a table full of nonsense. If you do not know which layout
+// you have, [IsSizePrefixed] guesses.
+//
+// Trailing bytes past the declared size are ignored, so this can be called on a
+// stream buffer that holds more than one message.
+func RootSizePrefixed(buf []byte) (Table, error) {
+	if len(buf) < 12 {
+		return Table{}, fmt.Errorf("flatread: buffer too small for a size prefix (%d bytes, need at least 12)", len(buf))
+	}
+	size := binary.LittleEndian.Uint32(buf)
+	if int(size)+4 > len(buf) {
+		return Table{}, fmt.Errorf("flatread: size prefix claims %d bytes but only %d follow", size, len(buf)-4)
+	}
+	if size < 8 {
+		return Table{}, fmt.Errorf("flatread: size prefix of %d is too small to hold a table", size)
+	}
+	return Root(buf[4 : 4+size])
+}
+
+// IsSizePrefixed guesses whether buf carries a size prefix, by checking whether
+// its first uint32 accounts for the rest of the buffer exactly.
+//
+// Like [Table.Guess] this reads structure rather than a recorded fact, and it
+// can be fooled: a plain buffer whose root offset happens to equal len(buf)-4
+// looks identical. It is a starting point for an unknown payload, not something
+// to branch on in production once you know the format.
+func IsSizePrefixed(buf []byte) bool {
+	if len(buf) < 12 {
+		return false
+	}
+	return int(binary.LittleEndian.Uint32(buf))+4 == len(buf)
+}
+
+// FileIdentifier reads the optional four-byte identifier a schema can attach to
+// its buffers, which sits directly after the root offset.
+//
+// The bool reports whether those four bytes look like an identifier at all,
+// meaning printable ASCII with no spaces. Nothing in the buffer records whether
+// the field is present: a schema without a file_identifier puts padding or the
+// start of a vtable in the same place. So a false here means "these bytes are
+// not a plausible identifier", not "this schema has none".
+//
+// When it is present it is usually the fastest way to work out what you have
+// been handed, because it is chosen to be human-readable and often appears in
+// the schema, the docs or the code that produced the buffer.
+func FileIdentifier(buf []byte) (string, bool) {
+	if len(buf) < 8 {
+		return "", false
+	}
+	id := buf[4:8]
+	for _, c := range id {
+		if c <= 0x20 || c > 0x7e {
+			return string(id), false
+		}
+	}
+	return string(id), true
+}
+
 // TableAtOffset returns the table at an absolute byte position in buf.
 //
 // Use it when you already know where a table starts, for instance when a
@@ -323,6 +390,23 @@ func (t Table) Uint32Vector(slot uint16) []uint32 {
 	out := make([]uint32, n)
 	for i := 0; i < n; i++ {
 		out[i] = t.u32(first + uint32(i)*4)
+	}
+	return out
+}
+
+// StringVector reads a vector of strings.
+//
+// An element that is out of range comes back as "", the same as [Table.StringAt]
+// would give, so the length of the result always matches the vector's declared
+// length.
+func (t Table) StringVector(slot uint16) []string {
+	_, n, ok := t.vectorStart(slot, 4)
+	if !ok {
+		return nil
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = t.StringAt(slot, i)
 	}
 	return out
 }

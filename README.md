@@ -55,6 +55,38 @@ It reads stdin when given no file, so it drops into a pipeline:
 curl -s https://example.com/payload | flatdump -depth 8
 ```
 
+With `-json` the same walk comes out machine-readable, which is what you want once you are grepping across a directory of captures:
+
+```bash
+flatdump -json payload.bin | jq '.fields[] | select(.kind == "string")'
+```
+
+## Buffers that are not plain
+
+Two things are worth checking before you conclude a payload is empty.
+
+**Size-prefixed buffers.** gRPC and any format that stores several messages back to back put a uint32 byte count in front of the buffer. `flatdump` detects that and says so; in code it is `RootSizePrefixed`, with `IsSizePrefixed` for the guess.
+
+This matters because feeding such a buffer to plain `Root` does not fail loudly. It reads the size as the root offset, lands somewhere arbitrary, and usually reports a table with no fields at all:
+
+```
+$ flatdump -prefix no sized.bin
+root @0xa8 (172 bytes)
+```
+
+No error, no fields, and identical to a buffer that genuinely has nothing in it.
+
+**File identifiers.** A schema can attach four bytes of identifier directly after the root offset, and when it is there it is usually the fastest way to find out what you are holding, because it is picked to be human-readable:
+
+```
+$ flatdump payload.bin
+file identifier "FLTR"
+root @0x40 (168 bytes)
+...
+```
+
+Nothing in the buffer records whether that field is present, so `FileIdentifier` returns the bytes plus whether they look like an identifier at all. A false there means "these are not plausible", not "this schema has none".
+
 ## The library
 
 ```go
@@ -81,7 +113,9 @@ for i := 0; i < root.VectorLen(12); i++ {
 }
 ```
 
-Scalars (`Byte`, `Bool`, `Int8` through `Int64`, `Uint16` through `Uint64`, `Float32`, `Float64`), strings, byte vectors, numeric vectors, nested tables and vectors of tables. `Has` distinguishes an absent field from one that's present and zero.
+Scalars (`Byte`, `Bool`, `Int8` through `Int64`, `Uint16` through `Uint64`, `Float32`, `Float64`), strings, byte vectors, numeric and string vectors, nested tables and vectors of tables. `Has` distinguishes an absent field from one that's present and zero.
+
+Entry points: `Root` for an ordinary buffer, `RootSizePrefixed` for one carrying a length, `TableAtOffset` when you already know where a table starts.
 
 ## How a buffer is laid out
 

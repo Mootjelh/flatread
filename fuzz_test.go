@@ -21,7 +21,16 @@ func FuzzReader(f *testing.F) {
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0})
 	f.Add(make([]byte, 64))
 
+	f.Add(sizePrefixed(sample()))
+
 	f.Fuzz(func(t *testing.T, data []byte) {
+		// The buffer-level helpers take raw bytes and must survive anything.
+		_ = IsSizePrefixed(data)
+		_, _ = FileIdentifier(data)
+		if sized, err := RootSizePrefixed(data); err == nil {
+			walk(sized, 0)
+		}
+
 		root, err := Root(data)
 		if err != nil {
 			return
@@ -62,6 +71,7 @@ func walk(t Table, depth int) {
 		_ = t.Int32Vector(slot)
 		_ = t.Uint32Vector(slot)
 		_ = t.Int64Vector(slot)
+		_ = t.StringVector(slot)
 
 		// Index past the end as well as inside it: the bounds check on element
 		// access is easy to get right for element 0 and wrong for the rest.

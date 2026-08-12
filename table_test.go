@@ -293,3 +293,158 @@ func TestLooksRoaring(t *testing.T) {
 		})
 	}
 }
+
+// --- size prefix, file identifier, string vectors ----------------------------
+
+// sizePrefixed wraps the sample in the layout gRPC and multi-message files use:
+// a uint32 byte count, then an ordinary buffer.
+func sizePrefixed(inner []byte) []byte {
+	out := make([]byte, 4+len(inner))
+	binary.LittleEndian.PutUint32(out, uint32(len(inner)))
+	copy(out[4:], inner)
+	return out
+}
+
+func TestRootSizePrefixed(t *testing.T) {
+	root, err := RootSizePrefixed(sizePrefixed(sample()))
+	if err != nil {
+		t.Fatalf("RootSizePrefixed: %v", err)
+	}
+	if got := root.String(6); got != "hello" {
+		t.Errorf("String(6) = %q, want %q", got, "hello")
+	}
+}
+
+// A size-prefixed buffer taken off a stream can carry the next message behind
+// it, so trailing bytes must not be an error.
+func TestRootSizePrefixedIgnoresTrailingBytes(t *testing.T) {
+	buf := append(sizePrefixed(sample()), make([]byte, 64)...)
+
+	root, err := RootSizePrefixed(buf)
+	if err != nil {
+		t.Fatalf("RootSizePrefixed: %v", err)
+	}
+	if got := root.String(6); got != "hello" {
+		t.Errorf("String(6) = %q, want %q", got, "hello")
+	}
+}
+
+func TestRootSizePrefixedRejectsBadPrefixes(t *testing.T) {
+	tests := []struct {
+		name string
+		buf  []byte
+	}{
+		{"too small", make([]byte, 8)},
+		{"prefix larger than the buffer", func() []byte {
+			b := make([]byte, 32)
+			binary.LittleEndian.PutUint32(b, 9999)
+			return b
+		}()},
+		{"prefix too small to hold a table", func() []byte {
+			b := make([]byte, 32)
+			binary.LittleEndian.PutUint32(b, 4)
+			return b
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := RootSizePrefixed(tt.buf); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
+func TestIsSizePrefixed(t *testing.T) {
+	if !IsSizePrefixed(sizePrefixed(sample())) {
+		t.Error("IsSizePrefixed(size-prefixed) = false, want true")
+	}
+	if IsSizePrefixed(sample()) {
+		t.Error("IsSizePrefixed(plain) = true, want false")
+	}
+	if IsSizePrefixed([]byte{1, 2, 3}) {
+		t.Error("IsSizePrefixed(tiny) = true, want false")
+	}
+}
+
+func TestFileIdentifier(t *testing.T) {
+	// Bytes 4..8 sit between the root offset and the first vtable, and the
+	// sample leaves them empty, which is what a schema with no file_identifier
+	// looks like.
+	if id, ok := FileIdentifier(sample()); ok {
+		t.Errorf("FileIdentifier(sample) = (%q, true), want ok=false", id)
+	}
+
+	withID := append([]byte(nil), sample()...)
+	copy(withID[4:8], "FLTR")
+
+	id, ok := FileIdentifier(withID)
+	if !ok || id != "FLTR" {
+		t.Errorf("FileIdentifier = (%q, %v), want (\"FLTR\", true)", id, ok)
+	}
+
+	// Writing the identifier must not disturb anything else.
+	root, err := Root(withID)
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if got := root.String(6); got != "hello" {
+		t.Errorf("String(6) = %q after writing an identifier, want %q", got, "hello")
+	}
+}
+
+// stringVectorSample is its own fixture rather than another slot on sample(),
+// so that adding it cannot shift the offsets the other tests assert on.
+//
+//	 0  u32 root offset -> 32
+//	 8  vtable: size 6, so slot 4 only
+//	32  table
+//	48  vector of 2 string offsets
+//	60  "aa"
+//	72  "bbb"
+func stringVectorSample() []byte {
+	b := make([]byte, 80)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 32)
+	u16(8, 6)
+	u16(10, 8)
+	u16(12, 4)
+
+	u32(32, 32-8)
+	u32(36, 48-36)
+
+	u32(48, 2)
+	u32(52, 60-52)
+	u32(56, 72-56)
+
+	u32(60, 2)
+	copy(b[64:], "aa")
+	u32(72, 3)
+	copy(b[76:], "bbb")
+
+	return b
+}
+
+func TestStringVector(t *testing.T) {
+	root, err := Root(stringVectorSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	got := root.StringVector(4)
+	want := []string{"aa", "bbb"}
+	if len(got) != len(want) {
+		t.Fatalf("StringVector(4) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("StringVector(4) = %v, want %v", got, want)
+		}
+	}
+
+	if got := root.StringVector(6); got != nil {
+		t.Errorf("StringVector(6) = %v, want nil for an absent field", got)
+	}
+}
