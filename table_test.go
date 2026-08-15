@@ -448,3 +448,181 @@ func TestStringVector(t *testing.T) {
 		t.Errorf("StringVector(6) = %v, want nil for an absent field", got)
 	}
 }
+
+// --- vectors of structs ------------------------------------------------------
+
+// structVectorSample holds a vector of 3 structs of 8 bytes each: {1,2} {3,4}
+// {5,6}. Structs are stored inline, so there are no offsets anywhere in the
+// vector.
+//
+//	 0  u32 root offset -> 24
+//	 8  vtable: size 6, so slot 4 only
+//	24  table
+//	40  vector of 3 structs, 8 bytes each
+func structVectorSample() []byte {
+	b := make([]byte, 72)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 24)
+	u16(8, 6)
+	u16(10, 8)
+	u16(12, 4)
+
+	u32(24, 24-8)
+	u32(28, 40-28)
+
+	u32(40, 3)
+	u32(44, 1)
+	u32(48, 2)
+	u32(52, 3)
+	u32(56, 4)
+	u32(60, 5)
+	u32(64, 6)
+
+	return b
+}
+
+func TestStructAt(t *testing.T) {
+	root, err := Root(structVectorSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	if got := root.StructVectorLen(4, 8); got != 3 {
+		t.Fatalf("StructVectorLen(4, 8) = %d, want 3", got)
+	}
+
+	want := [][2]uint32{{1, 2}, {3, 4}, {5, 6}}
+	for i, w := range want {
+		raw := root.StructAt(4, i, 8)
+		if len(raw) != 8 {
+			t.Fatalf("StructAt(4, %d, 8) returned %d bytes, want 8", i, len(raw))
+		}
+		x := binary.LittleEndian.Uint32(raw)
+		y := binary.LittleEndian.Uint32(raw[4:])
+		if x != w[0] || y != w[1] {
+			t.Errorf("struct %d = {%d, %d}, want {%d, %d}", i, x, y, w[0], w[1])
+		}
+	}
+
+	for _, bad := range []int{-1, 3, 99} {
+		if raw := root.StructAt(4, bad, 8); raw != nil {
+			t.Errorf("StructAt(4, %d, 8) = %v, want nil", bad, raw)
+		}
+	}
+	if raw := root.StructAt(4, 0, 0); raw != nil {
+		t.Errorf("StructAt with size 0 = %v, want nil", raw)
+	}
+}
+
+// A wrong element size is caught, because the declared count multiplied by that
+// size no longer fits the buffer. VectorLen cannot do this: it does not know
+// how wide an element is.
+func TestStructVectorLenRejectsAnImpossibleSize(t *testing.T) {
+	root, err := Root(structVectorSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if got := root.StructVectorLen(4, 64); got != 0 {
+		t.Errorf("StructVectorLen(4, 64) = %d, want 0", got)
+	}
+	if raw := root.StructAt(4, 0, 64); raw != nil {
+		t.Errorf("StructAt(4, 0, 64) = %v, want nil", raw)
+	}
+}
+
+// --- probing spread across a vector ------------------------------------------
+
+// headResolvesSample is built so that the FIRST FOUR elements of a vector each
+// resolve to a plausible vtable by coincidence, while later ones do not.
+//
+// This is the case that made Guess report vector-of-tables on data that is
+// nothing of the kind. Probing elements 0..3 sees four hits and concludes;
+// probing 0, 2, 4 and 7 hits the wall at element 4.
+//
+//	 0  u32 root offset -> 32
+//	 8  vtable, shared by the root table and the decoy at 88
+//	32  root table
+//	48  vector of 8 uint32
+//	88  decoy: a position that passes plausibleTable
+func headResolvesSample() []byte {
+	b := make([]byte, 96)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 32)
+	u16(8, 6)
+	u16(10, 8)
+	u16(12, 4)
+
+	u32(32, 32-8)
+	u32(36, 48-36)
+
+	u32(48, 8)
+	// Elements 0..3 point at the decoy at 88.
+	u32(52, 88-52)
+	u32(56, 88-56)
+	u32(60, 88-60)
+	u32(64, 88-64)
+	// Elements 4..7 point just past themselves, at nothing in particular.
+	u32(68, 1)
+	u32(72, 1)
+	u32(76, 1)
+	u32(80, 1)
+
+	u32(88, 88-8)
+
+	return b
+}
+
+func TestGuessProbesAcrossTheWholeVector(t *testing.T) {
+	root, err := Root(headResolvesSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	// Control: the first four elements really do all resolve, which is what
+	// made the old head-only probe conclude vector-of-tables.
+	for i := 0; i < 4; i++ {
+		if _, ok := root.TableAt(4, i); !ok {
+			t.Fatalf("fixture is wrong: element %d does not resolve", i)
+		}
+	}
+
+	if got := root.Guess(4); got != KindBytes {
+		t.Errorf("Guess(4) = %v, want %v — probing only the head of a vector is what this guards against", got, KindBytes)
+	}
+}
+
+func TestProbeIndices(t *testing.T) {
+	tests := []struct {
+		n, max uint32
+		want   []uint32
+	}{
+		{0, 4, nil},
+		{1, 4, []uint32{0}},
+		{4, 4, []uint32{0, 1, 2, 3}},
+		{8, 4, []uint32{0, 2, 4, 7}},
+		{100, 4, []uint32{0, 33, 66, 99}},
+		{8, 1, []uint32{0}},
+		{8, 0, nil},
+	}
+	for _, tt := range tests {
+		got := probeIndices(tt.n, tt.max)
+		if len(got) != len(tt.want) {
+			t.Errorf("probeIndices(%d, %d) = %v, want %v", tt.n, tt.max, got, tt.want)
+			continue
+		}
+		for i := range tt.want {
+			if got[i] != tt.want[i] {
+				t.Errorf("probeIndices(%d, %d) = %v, want %v", tt.n, tt.max, got, tt.want)
+				break
+			}
+		}
+		// The last element must always be probed, or the guard does not guard.
+		if tt.n > 0 && tt.max > 1 && got[len(got)-1] != tt.n-1 {
+			t.Errorf("probeIndices(%d, %d) does not probe the last element", tt.n, tt.max)
+		}
+	}
+}

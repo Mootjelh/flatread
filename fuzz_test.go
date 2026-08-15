@@ -73,6 +73,15 @@ func walk(t Table, depth int) {
 		_ = t.Int64Vector(slot)
 		_ = t.StringVector(slot)
 
+		// Struct sizes come from a schema, so a caller can pass anything at
+		// all, including sizes that do not divide the vector.
+		for _, size := range []int{-1, 0, 1, 3, 8, 4096} {
+			_ = t.StructVectorLen(slot, size)
+			for _, i := range []int{-1, 0, 1, 1 << 20} {
+				_ = t.StructAt(slot, i, size)
+			}
+		}
+
 		// Index past the end as well as inside it: the bounds check on element
 		// access is easy to get right for element 0 and wrong for the rest.
 		for _, i := range []int{-1, 0, 1, t.VectorLen(slot)} {

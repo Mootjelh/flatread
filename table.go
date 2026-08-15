@@ -394,6 +394,53 @@ func (t Table) Uint32Vector(slot uint16) []uint32 {
 	return out
 }
 
+// StructAt returns the bytes of element i in a vector of structs, without
+// copying.
+//
+// FlatBuffers structs are not tables. They are fixed-size records stored inline
+// in the vector, one after another, with no vtable and no offsets. That makes
+// them unreadable through [Table.TableAt], which treats every element as an
+// offset: on a struct vector it adds a number that was never an offset to the
+// element position and hands back a Table pointing at whatever sits there.
+//
+// The element size comes from the schema. Nothing in the buffer records it,
+// which is also why [Table.Guess] cannot tell a struct vector from a byte
+// vector and reports [KindBytes] for both.
+//
+// Fields inside the returned bytes are at fixed offsets, again from the schema,
+// and are read with encoding/binary directly.
+func (t Table) StructAt(slot uint16, i, size int) []byte {
+	if size <= 0 || i < 0 {
+		return nil
+	}
+	first, n, ok := t.vectorStart(slot, size)
+	if !ok || i >= n {
+		return nil
+	}
+	from := int(first) + i*size
+	to := from + size
+	if from < 0 || to > len(t.buf) || from > to {
+		return nil
+	}
+	return t.buf[from:to]
+}
+
+// StructVectorLen reports how many structs of the given size a vector holds,
+// or 0 when the declared count does not fit the buffer.
+//
+// This differs from [Table.VectorLen], which trusts the count without knowing
+// the element width. A truncated buffer shows up here and not there.
+func (t Table) StructVectorLen(slot uint16, size int) int {
+	if size <= 0 {
+		return 0
+	}
+	_, n, ok := t.vectorStart(slot, size)
+	if !ok {
+		return 0
+	}
+	return n
+}
+
 // StringVector reads a vector of strings.
 //
 // An element that is out of range comes back as "", the same as [Table.StringAt]

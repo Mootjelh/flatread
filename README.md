@@ -117,6 +117,23 @@ Scalars (`Byte`, `Bool`, `Int8` through `Int64`, `Uint16` through `Uint64`, `Flo
 
 Entry points: `Root` for an ordinary buffer, `RootSizePrefixed` for one carrying a length, `TableAtOffset` when you already know where a table starts.
 
+### Vectors of structs
+
+Structs are not tables. They're fixed-size records stored inline in the vector, with no vtable and no offsets, so `TableAt` cannot read them: it treats each element as an offset, adds a number that was never one, and returns a table pointing at whatever sits there. No error, no panic, just plausible nonsense.
+
+`StructAt` reads them, given the element size from the schema:
+
+```go
+n := root.StructVectorLen(6, 8)          // 8-byte records
+for i := 0; i < n; i++ {
+    rec := root.StructAt(6, i, 8)
+    x := binary.LittleEndian.Uint32(rec)
+    y := binary.LittleEndian.Uint32(rec[4:])
+}
+```
+
+`StructVectorLen` also catches a wrong size, because the declared count multiplied by that size stops fitting the buffer. Plain `VectorLen` can't: it doesn't know how wide an element is.
+
 ## How a buffer is laid out
 
 Worth having to hand while reading a dump. Everything is little-endian.
@@ -142,6 +159,8 @@ Offsets to strings, vectors and nested tables are uoffsets: unsigned, and relati
 flatread recovers structure, not types. `Guess` works from a length prefix that fits, a run of printable bytes, a known magic number, or an offset that resolves to a readable vtable. That's genuinely all the information the buffer holds.
 
 The clearest consequence, which has a test pinning it so it doesn't get "fixed" later: a vector of `uint32{1, 2, 3}` and the twelve bytes that encode it are the same twelve bytes, so `Guess` reports `bytes`. Nothing in a FlatBuffers buffer records a vector's element width.
+
+The same applies to vectors of structs, which is why they need `StructAt` and an element size you supply.
 
 So use `Guess` to find the slots you care about, confirm each one against real data, then read them with the typed accessors. Don't build a decoder on it.
 

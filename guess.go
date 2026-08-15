@@ -29,8 +29,10 @@ const (
 	KindString
 
 	// KindBytes is a length-prefixed run that is not printable and not
-	// recognised. A vector of any fixed-width numeric type also lands here:
-	// nothing in the buffer distinguishes a byte vector from an int32 vector.
+	// recognised. A vector of any fixed-width numeric type also lands here, and
+	// so does a vector of structs: nothing in the buffer distinguishes a byte
+	// vector from an int32 vector or from packed fixed-size records. Read those
+	// with [Table.StructAt] once the schema tells you the element size.
 	KindBytes
 
 	// KindRoaring is a byte vector carrying a RoaringBitmap serial cookie.
@@ -100,7 +102,7 @@ func (t Table) Guess(slot uint16) Kind {
 		}
 		if n < maxProbeVector {
 			checked, good := 0, 0
-			for i := uint32(0); i < n && checked < maxProbeElems; i++ {
+			for _, i := range probeIndices(n, maxProbeElems) {
 				elem := target + 4 + i*4
 				if int(elem)+4 > len(t.buf) {
 					break
@@ -111,7 +113,7 @@ func (t Table) Guess(slot uint16) Kind {
 				}
 			}
 			// Require every probed element to resolve. One stray hit is easy;
-			// four in a row is not.
+			// four spread across the vector is not.
 			if checked > 0 && good == checked {
 				return KindVectorOfTables
 			}
@@ -141,6 +143,37 @@ func plausibleTable(buf []byte, pos uint32) bool {
 	// A vtable is at least its own 4-byte header, and 512 bytes would be 254
 	// fields: large enough for anything real, small enough to reject noise.
 	return size >= 4 && size < 512 && int(vt)+int(size) <= len(buf)
+}
+
+// probeIndices picks up to max element indices spread evenly across a vector of
+// n elements, always including the first and the last.
+//
+// Sampling the first few instead is what a straightforward loop does, and it is
+// the worst possible choice. The head of a vector is where a coincidence is
+// most likely to survive: small values near the start of a buffer land inside
+// the buffer, and a struct vector whose first records hold small numbers can
+// have every one of them resolve to something that passes plausibleTable. The
+// same accident holding at the first, middle and last element at once is far
+// less likely, and costs exactly the same number of probes.
+func probeIndices(n, max uint32) []uint32 {
+	if n == 0 || max == 0 {
+		return nil
+	}
+	if n <= max {
+		out := make([]uint32, n)
+		for i := range out {
+			out[i] = uint32(i)
+		}
+		return out
+	}
+	if max == 1 {
+		return []uint32{0}
+	}
+	out := make([]uint32, max)
+	for i := uint32(0); i < max; i++ {
+		out[i] = i * (n - 1) / (max - 1)
+	}
+	return out
 }
 
 func isPrintableRun(b []byte) bool {
