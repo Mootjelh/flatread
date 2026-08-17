@@ -458,6 +458,32 @@ func (t Table) StringVector(slot uint16) []string {
 	return out
 }
 
+// Float32Vector reads a vector of float32.
+func (t Table) Float32Vector(slot uint16) []float32 {
+	first, n, ok := t.vectorStart(slot, 4)
+	if !ok {
+		return nil
+	}
+	out := make([]float32, n)
+	for i := 0; i < n; i++ {
+		out[i] = math.Float32frombits(t.u32(first + uint32(i)*4))
+	}
+	return out
+}
+
+// Float64Vector reads a vector of float64.
+func (t Table) Float64Vector(slot uint16) []float64 {
+	first, n, ok := t.vectorStart(slot, 8)
+	if !ok {
+		return nil
+	}
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = math.Float64frombits(t.u64(first + uint32(i)*8))
+	}
+	return out
+}
+
 // Int64Vector reads a vector of int64.
 func (t Table) Int64Vector(slot uint16) []int64 {
 	first, n, ok := t.vectorStart(slot, 8)

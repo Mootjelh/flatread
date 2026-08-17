@@ -2,6 +2,7 @@ package flatread
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 )
 
@@ -624,5 +625,79 @@ func TestProbeIndices(t *testing.T) {
 		if tt.n > 0 && tt.max > 1 && got[len(got)-1] != tt.n-1 {
 			t.Errorf("probeIndices(%d, %d) does not probe the last element", tt.n, tt.max)
 		}
+	}
+}
+
+// floatVectorSample: slot 4 is a vector of 3 float32, slot 6 a vector of 2
+// float64. Every value is exactly representable, so a decode error shows up as
+// a wrong number rather than a rounding argument.
+//
+//	 0  u32 root offset -> 24
+//	 8  vtable: size 8, so slots 4 and 6
+//	24  table
+//	40  float32 vector
+//	56  float64 vector
+func floatVectorSample() []byte {
+	b := make([]byte, 80)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+	f32 := func(at int, v float32) { u32(at, math.Float32bits(v)) }
+	f64 := func(at int, v float64) { binary.LittleEndian.PutUint64(b[at:], math.Float64bits(v)) }
+
+	u32(0, 24)
+	u16(8, 8)
+	u16(10, 12)
+	u16(12, 4)
+	u16(14, 8)
+
+	u32(24, 24-8)
+	u32(28, 40-28)
+	u32(32, 56-32)
+
+	u32(40, 3)
+	f32(44, 1.5)
+	f32(48, -2.25)
+	f32(52, 3.75)
+
+	u32(56, 2)
+	f64(60, 1.25)
+	f64(68, -4.5)
+
+	return b
+}
+
+func TestFloatVectors(t *testing.T) {
+	root, err := Root(floatVectorSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	got32 := root.Float32Vector(4)
+	want32 := []float32{1.5, -2.25, 3.75}
+	if len(got32) != len(want32) {
+		t.Fatalf("Float32Vector(4) = %v, want %v", got32, want32)
+	}
+	for i := range want32 {
+		if got32[i] != want32[i] {
+			t.Errorf("Float32Vector(4)[%d] = %v, want %v", i, got32[i], want32[i])
+		}
+	}
+
+	got64 := root.Float64Vector(6)
+	want64 := []float64{1.25, -4.5}
+	if len(got64) != len(want64) {
+		t.Fatalf("Float64Vector(6) = %v, want %v", got64, want64)
+	}
+	for i := range want64 {
+		if got64[i] != want64[i] {
+			t.Errorf("Float64Vector(6)[%d] = %v, want %v", i, got64[i], want64[i])
+		}
+	}
+
+	if got := root.Float32Vector(8); got != nil {
+		t.Errorf("Float32Vector(8) = %v, want nil for an absent field", got)
+	}
+	if got := root.Float64Vector(8); got != nil {
+		t.Errorf("Float64Vector(8) = %v, want nil for an absent field", got)
 	}
 }

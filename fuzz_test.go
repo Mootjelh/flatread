@@ -72,6 +72,8 @@ func walk(t Table, depth int) {
 		_ = t.Uint32Vector(slot)
 		_ = t.Int64Vector(slot)
 		_ = t.StringVector(slot)
+		_ = t.Float32Vector(slot)
+		_ = t.Float64Vector(slot)
 
 		// Struct sizes come from a schema, so a caller can pass anything at
 		// all, including sizes that do not divide the vector.
