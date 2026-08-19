@@ -134,6 +134,26 @@ for i := 0; i < n; i++ {
 
 `StructVectorLen` also catches a wrong size, because the declared count multiplied by that size stops fitting the buffer. Plain `VectorLen` can't: it doesn't know how wide an element is.
 
+### Unions
+
+A union becomes two fields in consecutive slots: the type tag at `n`, the value at `n+2`.
+
+```go
+switch kind, value, ok := root.Union(6); {
+case !ok:
+    // absent, or the tag is UnionNone
+case kind == 1:
+    _ = value.String(4)
+}
+
+for i := 0; i < root.UnionVectorLen(10); i++ {
+    kind, value, ok := root.UnionAt(10, i)
+    ...
+}
+```
+
+A tag of `UnionNone` in a union vector is a hole, not the end. Stopping there skips everything after it.
+
 ## How a buffer is laid out
 
 Worth having to hand while reading a dump. Everything is little-endian.

@@ -75,6 +75,13 @@ func walk(t Table, depth int) {
 		_ = t.Float32Vector(slot)
 		_ = t.Float64Vector(slot)
 
+		_ = t.UnionType(slot)
+		_, _, _ = t.Union(slot)
+		_ = t.UnionVectorLen(slot)
+		for _, i := range []int{-1, 0, 1, 1 << 20} {
+			_, _, _ = t.UnionAt(slot, i)
+		}
+
 		// Struct sizes come from a schema, so a caller can pass anything at
 		// all, including sizes that do not divide the vector.
 		for _, size := range []int{-1, 0, 1, 3, 8, 4096} {

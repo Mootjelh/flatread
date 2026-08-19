@@ -701,3 +701,145 @@ func TestFloatVectors(t *testing.T) {
 		t.Errorf("Float64Vector(8) = %v, want nil for an absent field", got)
 	}
 }
+
+// unionSample has a single union in slots 4 and 6, and a vector of unions in
+// slots 8 and 10. The third element of that vector carries tag 0, which is a
+// hole in the middle rather than the end.
+//
+//	 0  u32 root offset -> 40
+//	 8  root vtable: slots 4, 6, 8, 10
+//	24  vtable shared by every value table
+//	40  root table
+//	64  the single union's value {111}
+//	72  tag vector {1, 2, 0}
+//	80  value vector -> 96, 104, 112
+func unionSample() []byte {
+	b := make([]byte, 120)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 40)
+
+	u16(8, 12)
+	u16(10, 20)
+	u16(12, 4)  // slot 4  tag
+	u16(14, 8)  // slot 6  value
+	u16(16, 12) // slot 8  tag vector
+	u16(18, 16) // slot 10 value vector
+
+	// One vtable for every value table: they all have the same shape.
+	u16(24, 6)
+	u16(26, 8)
+	u16(28, 4)
+
+	u32(40, 40-8)
+	u32(44, 2)     // the tag, read as a single byte
+	u32(48, 64-48) // -> value table
+	u32(52, 72-52) // -> tag vector
+	u32(56, 80-56) // -> value vector
+
+	u32(64, 64-24)
+	u32(68, 111)
+
+	u32(72, 3)
+	b[76], b[77], b[78] = 1, 2, 0
+
+	u32(80, 3)
+	u32(84, 96-84)
+	u32(88, 104-88)
+	u32(92, 112-92)
+
+	u32(96, 96-24)
+	u32(100, 201)
+	u32(104, 104-24)
+	u32(108, 202)
+	u32(112, 112-24)
+	u32(116, 203)
+
+	return b
+}
+
+func TestUnion(t *testing.T) {
+	root, err := Root(unionSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	if got := root.UnionType(4); got != 2 {
+		t.Errorf("UnionType(4) = %d, want 2", got)
+	}
+
+	kind, value, ok := root.Union(4)
+	if !ok {
+		t.Fatal("Union(4) reported absent")
+	}
+	if kind != 2 {
+		t.Errorf("kind = %d, want 2", kind)
+	}
+	if got := value.Uint32(4); got != 111 {
+		t.Errorf("value.Uint32(4) = %d, want 111", got)
+	}
+}
+
+func TestUnionVector(t *testing.T) {
+	root, err := Root(unionSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	if got := root.UnionVectorLen(8); got != 3 {
+		t.Fatalf("UnionVectorLen(8) = %d, want 3", got)
+	}
+
+	for i, want := range []struct {
+		kind  byte
+		value uint32
+	}{{1, 201}, {2, 202}} {
+		kind, value, ok := root.UnionAt(8, i)
+		if !ok {
+			t.Fatalf("UnionAt(8, %d) reported absent", i)
+		}
+		if kind != want.kind {
+			t.Errorf("element %d: kind = %d, want %d", i, kind, want.kind)
+		}
+		if got := value.Uint32(4); got != want.value {
+			t.Errorf("element %d: value = %d, want %d", i, got, want.value)
+		}
+	}
+}
+
+// A tag of 0 is a hole, not the end of the vector. Stopping there would skip
+// every element after it.
+func TestUnionNoneIsAHoleNotTheEnd(t *testing.T) {
+	root, err := Root(unionSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	if _, _, ok := root.UnionAt(8, 2); ok {
+		t.Error("UnionAt(8, 2) should report absent: its tag is UnionNone")
+	}
+	if got := root.UnionVectorLen(8); got != 3 {
+		t.Errorf("UnionVectorLen(8) = %d, want 3: the hole still counts", got)
+	}
+}
+
+func TestUnionOutOfRange(t *testing.T) {
+	root, err := Root(unionSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	for _, i := range []int{-1, 3, 1 << 20} {
+		if _, _, ok := root.UnionAt(8, i); ok {
+			t.Errorf("UnionAt(8, %d) should be out of range", i)
+		}
+	}
+	// Slot 14 holds nothing at all.
+	if _, _, ok := root.Union(14); ok {
+		t.Error("Union(14) should report absent")
+	}
+	if got := root.UnionVectorLen(14); got != 0 {
+		t.Errorf("UnionVectorLen(14) = %d, want 0", got)
+	}
+}

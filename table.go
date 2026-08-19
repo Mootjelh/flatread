@@ -548,3 +548,66 @@ func (t Table) BytesAt(slot uint16, i int) []byte {
 	}
 	return t.buf[from:to]
 }
+
+// --- unions -----------------------------------------------------------------
+
+// UnionNone is the type tag a union carries when it holds nothing. FlatBuffers
+// reserves 0 for it in every union enum.
+const UnionNone byte = 0
+
+// UnionType reads the type tag of a union without resolving its value.
+//
+// A union in a schema becomes two fields in the table, in consecutive slots:
+// the tag at typeSlot, saying which member is present, and the value at
+// typeSlot+2. Without the schema the tag is just a number, but it is the number
+// the schema's enum is keyed on, so it is what you match against once you know
+// what the members are.
+func (t Table) UnionType(typeSlot uint16) byte { return t.Byte(typeSlot) }
+
+// Union reads a union: its type tag and the table it points at. The bool is
+// false when the tag is [UnionNone] or the value is missing.
+//
+// Union members are usually tables, which is what this returns. A schema can
+// also put a string or a struct in a union; for those, read typeSlot+2 directly
+// with [Table.String] or [Table.StructAt], since the value slot is an ordinary
+// slot.
+func (t Table) Union(typeSlot uint16) (byte, Table, bool) {
+	kind := t.Byte(typeSlot)
+	if kind == UnionNone {
+		return UnionNone, Table{}, false
+	}
+	value, ok := t.Table(typeSlot + 2)
+	return kind, value, ok
+}
+
+// UnionVectorLen reports how many elements a vector of unions holds.
+//
+// A union vector is two parallel vectors: the tags, as a vector of bytes at
+// typeSlot, and the values at typeSlot+2. An encoder keeps them the same
+// length. This reports the shorter of the two, so any index it accepts is in
+// range for both, which matters on a truncated buffer where they are not.
+func (t Table) UnionVectorLen(typeSlot uint16) int {
+	tags := len(t.Bytes(typeSlot))
+	values := t.VectorLen(typeSlot + 2)
+	if values < tags {
+		return values
+	}
+	return tags
+}
+
+// UnionAt reads element i of a vector of unions.
+//
+// An element whose tag is [UnionNone] reports false. That is not an error and
+// not the end of the vector: a union vector can hold empty slots between full
+// ones, so keep walking to [Table.UnionVectorLen].
+func (t Table) UnionAt(typeSlot uint16, i int) (byte, Table, bool) {
+	if i < 0 || i >= t.UnionVectorLen(typeSlot) {
+		return UnionNone, Table{}, false
+	}
+	kind := t.Bytes(typeSlot)[i]
+	if kind == UnionNone {
+		return UnionNone, Table{}, false
+	}
+	value, ok := t.TableAt(typeSlot+2, i)
+	return kind, value, ok
+}
