@@ -61,6 +61,29 @@ With `-json` the same walk comes out machine-readable, which is what you want on
 flatdump -json payload.bin | jq '.fields[] | select(.kind == "string")'
 ```
 
+## Comparing two captures
+
+Capture the same request twice, or the same object before and after something
+changed, and ask which slots moved:
+
+```
+$ flatdump -diff before.bin after.bin
+4              4242 -> 9999
+6              "hello" -> "world"
+10.4           7 -> 8
+12[0].4        11 -> 12
+```
+
+The path is the slot route from the root: a dot for a nested table, brackets for
+an element of a table vector. That works without a schema, because a slot number
+is a stable handle whether or not you know what the slot means.
+
+Exit codes follow `diff(1)`: 0 when the buffers agree, 1 when they differ, 2 on
+an error. In code it is `flatread.Diff(a, b)`, returning a `[]Change`.
+
+A slot present on only one side is reported rather than skipped, which is the
+case a walk over one buffer's slots quietly misses.
+
 ## Buffers that are not plain
 
 Two things are worth checking before you conclude a payload is empty.

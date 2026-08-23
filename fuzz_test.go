@@ -41,6 +41,15 @@ func FuzzReader(f *testing.F) {
 		// Dump exercises the same accessors through a different path, including
 		// the recursion guard.
 		_ = Dump(data)
+
+		// Diff walks two buffers at once, so its cycle guard is keyed on the
+		// pair. Compare arbitrary input against a known-good buffer both ways
+		// round, and against itself.
+		if good, err := Root(sample()); err == nil {
+			_ = Diff(root, good)
+			_ = Diff(good, root)
+		}
+		_ = Diff(root, root)
 	})
 }
 
