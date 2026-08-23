@@ -843,3 +843,39 @@ func TestUnionOutOfRange(t *testing.T) {
 		t.Errorf("UnionVectorLen(14) = %d, want 0", got)
 	}
 }
+
+func TestUnionHint(t *testing.T) {
+	root, err := Root(unionSample())
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	single, ok := root.UnionHint(4)
+	if !ok {
+		t.Fatal("UnionHint(4) found nothing, want a single union")
+	}
+	if single.ValueSlot != 6 || single.Elements != 0 {
+		t.Errorf("UnionHint(4) = %+v, want value slot 6 and 0 elements", single)
+	}
+
+	vec, ok := root.UnionHint(8)
+	if !ok {
+		t.Fatal("UnionHint(8) found nothing, want a vector of unions")
+	}
+	if vec.ValueSlot != 10 || vec.Elements != 3 {
+		t.Errorf("UnionHint(8) = %+v, want value slot 10 and 3 elements", vec)
+	}
+}
+
+// The ordinary fixture has no unions in it. A hint here would be a false
+// positive, which is worse than no hint: it would send someone reading an
+// unknown payload after a pairing that does not exist.
+func TestUnionHintDoesNotFireOnOrdinaryFields(t *testing.T) {
+	r := rootOf(t)
+
+	for _, slot := range []uint16{4, 6, 8, 10, 12} {
+		if shape, ok := r.UnionHint(slot); ok {
+			t.Errorf("UnionHint(%d) = %+v, want no hint", slot, shape)
+		}
+	}
+}

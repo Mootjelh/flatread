@@ -74,3 +74,24 @@ func TestCycleTerminates(t *testing.T) {
 		t.Error("Dump returned nothing")
 	}
 }
+
+func TestDumpPointsOutUnions(t *testing.T) {
+	out := Dump(unionSample())
+
+	for _, want := range []string{
+		"maybe a union tag, value in slot 6",
+		"maybe union tags for the 3 tables in slot 10",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Dump() missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// The ordinary sample has no unions, so a hint on it would be a false positive
+// sending a reader after a pairing that is not there.
+func TestDumpDoesNotInventUnions(t *testing.T) {
+	if out := Dump(sample()); strings.Contains(out, "union") {
+		t.Errorf("Dump() claims a union where there is none\n---\n%s", out)
+	}
+}

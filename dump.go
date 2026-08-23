@@ -111,6 +111,18 @@ func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opt
 			fmt.Fprintf(b, "%sslot %-3d scalar   u32=%d u16=%d u8=%d\n",
 				ind, slot, t.Uint32(slot), t.Uint16(slot), t.Byte(slot))
 		}
+
+		// A union is two slots, and read one at a time they look unrelated: a
+		// small number here, a table two slots along. Say so, as a maybe.
+		if shape, ok := t.UnionHint(slot); ok {
+			if shape.Elements > 0 {
+				fmt.Fprintf(b, "%s         maybe union tags for the %d tables in slot %d\n",
+					ind, shape.Elements, shape.ValueSlot)
+			} else {
+				fmt.Fprintf(b, "%s         maybe a union tag, value in slot %d\n",
+					ind, shape.ValueSlot)
+			}
+		}
 	}
 }
 

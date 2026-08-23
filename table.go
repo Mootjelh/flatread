@@ -611,3 +611,60 @@ func (t Table) UnionAt(typeSlot uint16, i int) (byte, Table, bool) {
 	value, ok := t.TableAt(typeSlot+2, i)
 	return kind, value, ok
 }
+
+// UnionShape describes a pair of slots that look like the two halves of a
+// union: the tag and the value it selects.
+type UnionShape struct {
+	TagSlot   uint16
+	ValueSlot uint16
+
+	// Elements is 0 for a single union, or the element count for a vector of
+	// unions.
+	Elements int
+}
+
+// maxUnionTag bounds what counts as a plausible tag. Union enums are small and
+// dense, starting at 1, so a byte in the hundreds is far more likely to be an
+// ordinary number that happens to sit next to a table.
+const maxUnionTag = 64
+
+// UnionHint reports whether a slot looks like the tag half of a union.
+//
+// Nothing in a buffer says "these two slots are a union". This checks the shape:
+// a small tag next to a value that resolves, or a vector of tags the same length
+// as a vector of values. Like [Table.Guess] it is a starting point for reading
+// an unknown payload, not a fact to decode on, and the tools that use it say
+// "maybe" rather than naming it.
+//
+// Use [Table.Union] and [Table.UnionAt] once you know from the schema which
+// slots really are unions.
+func (t Table) UnionHint(slot uint16) (UnionShape, bool) {
+	shape := UnionShape{TagSlot: slot, ValueSlot: slot + 2}
+
+	// A vector of unions: tags as bytes, values as tables, same length. The
+	// matching lengths are what make this worth reporting; two unrelated
+	// vectors agreeing on their count is uncommon.
+	if tags := t.Bytes(slot); len(tags) > 0 {
+		if n := t.VectorLen(slot + 2); n > 0 && n == len(tags) {
+			if _, ok := t.TableAt(slot+2, 0); ok {
+				shape.Elements = n
+				return shape, true
+			}
+		}
+	}
+
+	// A single union: a small tag, and a value that resolves to a table with
+	// fields in it. The field check matters, because an offset into arbitrary
+	// bytes resolves to an empty table often enough to be noise.
+	if t.Guess(slot) != KindScalar {
+		return UnionShape{}, false
+	}
+	tag := t.Byte(slot)
+	if tag < 1 || tag > maxUnionTag {
+		return UnionShape{}, false
+	}
+	if value, ok := t.Table(slot + 2); ok && len(value.Slots()) > 0 {
+		return shape, true
+	}
+	return UnionShape{}, false
+}

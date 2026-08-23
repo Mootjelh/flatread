@@ -78,6 +78,7 @@ func walk(t Table, depth int) {
 		_ = t.UnionType(slot)
 		_, _, _ = t.Union(slot)
 		_ = t.UnionVectorLen(slot)
+		_, _ = t.UnionHint(slot)
 		for _, i := range []int{-1, 0, 1, 1 << 20} {
 			_, _, _ = t.UnionAt(slot, i)
 		}
