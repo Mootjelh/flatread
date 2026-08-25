@@ -1,7 +1,10 @@
-# Binaries
+# Binaries. Anchored to the root on purpose: a pattern with no slash matches
+# any path component of that name at any depth, so a bare "flatdump" also
+# matches the cmd/flatdump directory and quietly keeps the command out of the
+# repository.
 bin/
-flatdump
-flatdump.exe
+/flatdump
+/flatdump.exe
 *.exe
 *.test
 
