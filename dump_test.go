@@ -3,6 +3,7 @@ package flatread
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -94,4 +95,116 @@ func TestDumpDoesNotInventUnions(t *testing.T) {
 	if out := Dump(sample()); strings.Contains(out, "union") {
 		t.Errorf("Dump() claims a union where there is none\n---\n%s", out)
 	}
+}
+
+// --- vectors of structs ------------------------------------------------------
+
+// Without a schema the dump cannot know, and says the wrong thing plausibly:
+// structVectorSample holds 24 bytes of records and reads as a 3-byte vector,
+// because the count of a struct vector is its element count. This is the state
+// StructSize exists to fix, so pin it, otherwise the test below could pass for
+// the wrong reason.
+func TestDumpWithoutStructSizeReadsAStructVectorAsBytes(t *testing.T) {
+	out := Dump(structVectorSample())
+	if !strings.Contains(out, "slot 4   bytes    3") {
+		t.Errorf("Dump() = %q, want the byte-vector reading it has always given", out)
+	}
+}
+
+func TestDumpStructVector(t *testing.T) {
+	out := DumpWith(structVectorSample(), DumpOptions{
+		StructSize: func(path []uint16) int {
+			if len(path) == 1 && path[0] == 4 {
+				return 8
+			}
+			return 0
+		},
+	})
+
+	for _, want := range []string{
+		"slot 4   structs  3 x 8 bytes",
+		"[0] 01 00 00 00 02 00 00 00   u32 1 2",
+		"[1] 03 00 00 00 04 00 00 00   u32 3 4",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Dump() missing %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "slot 4   bytes") {
+		t.Errorf("the byte-vector reading is still there\n---\n%s", out)
+	}
+}
+
+// The default breadth is 3 and the sample holds exactly 3, so ask for fewer to
+// reach the remainder line at all.
+func TestDumpStructVectorRespectsMaxVectorElems(t *testing.T) {
+	out := DumpWith(structVectorSample(), DumpOptions{
+		MaxVectorElems: 2,
+		StructSize:     func([]uint16) int { return 8 },
+	})
+
+	if !strings.Contains(out, "... 1 more") {
+		t.Errorf("Dump() did not summarise the remainder\n---\n%s", out)
+	}
+	if strings.Contains(out, "[2]") {
+		t.Errorf("Dump() expanded past MaxVectorElems\n---\n%s", out)
+	}
+}
+
+// A size that cannot fit is reported rather than quietly falling back to the
+// byte-vector rendering. The caller stated a schema and is owed an answer to
+// that question, not to a different one.
+func TestDumpStructSizeThatDoesNotFit(t *testing.T) {
+	out := DumpWith(structVectorSample(), DumpOptions{
+		StructSize: func([]uint16) int { return 4096 },
+	})
+
+	if !strings.Contains(out, "no vector of 4096-byte elements fits here") {
+		t.Errorf("Dump() = %q, want it to say the size does not fit", out)
+	}
+	if strings.Contains(out, "slot 4   bytes") {
+		t.Errorf("Dump() fell back to the byte reading instead of reporting\n---\n%s", out)
+	}
+}
+
+func TestDumpStructSizeIsAskedWithThePathFromTheRoot(t *testing.T) {
+	seen := map[string]bool{}
+	_ = DumpWith(sample(), DumpOptions{
+		StructSize: func(path []uint16) int {
+			seen[fmt.Sprint(path)] = true
+			return 0
+		},
+	})
+
+	// [10 4] is slot 4 of the table in root slot 10, and [12 4] is slot 4 of
+	// the tables in the vector at root slot 12. The element index is absent
+	// from both, which is the point: a path names a place in the schema.
+	for _, want := range []string{"[6]", "[10]", "[10 4]", "[12 4]"} {
+		if !seen[want] {
+			t.Errorf("StructSize was never asked about %s, saw %v", want, keys(seen))
+		}
+	}
+}
+
+// There is deliberately no test that a kept path survives the rest of the walk.
+// One was written and it could not fail: the walk hands out a fresh slice per
+// slot, and even the append version it replaced happened to reallocate every
+// time at the depth any sample here reaches. Catching that regression needs a
+// buffer nested about four deep, which does not exist yet. The comment in
+// dumpTable carries the reasoning instead.
+
+func keys(m any) []string {
+	var out []string
+	switch m := m.(type) {
+	case map[string]bool:
+		for k := range m {
+			out = append(out, k)
+		}
+	case map[string]int:
+		for k := range m {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -42,6 +42,15 @@ func FuzzReader(f *testing.F) {
 		// the recursion guard.
 		_ = Dump(data)
 
+		// StructSize is answered by a caller holding a schema, so it can name a
+		// size for a slot that holds nothing of the sort, or one far larger
+		// than the buffer. The struct rendering has to survive all of it.
+		for _, size := range []int{1, 3, 8, 1 << 20} {
+			_ = DumpWith(data, DumpOptions{
+				StructSize: func([]uint16) int { return size },
+			})
+		}
+
 		// Diff walks two buffers at once, so its cycle guard is keyed on the
 		// pair. Compare arbitrary input against a known-good buffer both ways
 		// round, and against itself.

@@ -110,6 +110,41 @@ root @0x40 (168 bytes)
 
 Nothing in the buffer records whether that field is present, so `FileIdentifier` returns the bytes plus whether they look like an identifier at all. A false there means "these are not plausible", not "this schema has none".
 
+## Vectors of structs
+
+A struct is not a table. It is a fixed-size record stored inline, with no vtable and no offsets, so a vector of them is a count followed by raw bytes. A vector of bytes is also a count followed by raw bytes. Nothing in the buffer tells them apart, and `Guess` reports `KindBytes` for both.
+
+That reads badly by default. Three 8-byte structs is 24 bytes of data, and the count in front of them is 3, so the dump says:
+
+```
+$ flatdump payload.bin
+  slot 4   bytes    3  01 00 00
+```
+
+which looks like a tiny byte vector rather than three records. Tell it the element size and it becomes readable:
+
+```
+$ flatdump -struct 4:8 payload.bin
+  slot 4   structs  3 x 8 bytes
+    [0] 01 00 00 00 02 00 00 00   u32 1 2
+    [1] 03 00 00 00 04 00 00 00   u32 3 4
+    [2] 05 00 00 00 06 00 00 00   u32 5 6
+```
+
+The uint32 reading is shown beside the bytes rather than instead of them, on the same reasoning as the scalar line showing three widths at once: the field layout also comes from a schema, so which reading is right is exactly what you do not know yet.
+
+The argument is `path:size`, and the path is slot numbers from the root, dotted. `-struct 6:8` is slot 6 of the root; `-struct 4.6:12` is slot 6 of the table in root slot 4. It has to be a path rather than a bare slot number, because the dump walks every nested table and a bare number would claim that slot in all of them, turning ordinary byte vectors into nonsense records. The flag is repeatable.
+
+A size that cannot fit is reported rather than quietly falling back:
+
+```
+  slot 4   structs  no vector of 4096-byte elements fits here
+```
+
+You asked a question about a schema and that is the answer to it. Falling back to the byte reading would show you the answer to a different one.
+
+In code it is `DumpOptions.StructSize func(path []uint16) int`, returning 0 for anything that is not a struct vector, with `Table.StructAt` and `Table.StructVectorLen` underneath for reading the elements yourself.
+
 ## The library
 
 ```go

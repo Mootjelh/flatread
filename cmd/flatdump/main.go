@@ -4,6 +4,7 @@
 //	flatdump payload.bin
 //	curl -s https://example.com/payload | flatdump
 //	flatdump -depth 8 -elems 10 payload.bin
+//	flatdump -struct 6:8 payload.bin
 //	flatdump -json payload.bin | jq '.fields[] | select(.kind == "string")'
 package main
 
@@ -23,6 +24,8 @@ func main() {
 	asJSON := flag.Bool("json", false, "emit JSON instead of the indented listing")
 	prefix := flag.String("prefix", "auto", "size prefix handling: auto, yes or no")
 	other := flag.String("diff", "", "compare the given file against `file`, and list the slots that differ")
+	structs := structFlag{}
+	flag.Var(structs, "struct", "read a slot as a vector of structs, as `path:size`, e.g. 6:8 or 4.6:12. Repeatable")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: flatdump [flags] [file]
 
@@ -30,6 +33,9 @@ Reads stdin when no file is given.
 
 With -diff, exits 0 when the two buffers agree, 1 when they differ, and 2 on
 an error, the same way diff(1) does.
+
+Nothing in a buffer distinguishes a vector of structs from a vector of bytes,
+so -struct is how you tell it. The path is slot numbers from the root, dotted.
 
 flags:
 `)
@@ -60,7 +66,7 @@ flags:
 	id, hasID := flatread.FileIdentifier(payload(buf, sized))
 
 	if *asJSON {
-		emitJSON(buf, root, sized, id, hasID, *depth, *elems)
+		emitJSON(buf, root, sized, id, hasID, *depth, *elems, structs)
 		return
 	}
 
@@ -74,6 +80,7 @@ flags:
 		MaxDepth:       *depth,
 		MaxVectorElems: *elems,
 		Annotate:       annotate,
+		StructSize:     structs.sizeAt,
 	}))
 }
 
@@ -177,13 +184,15 @@ type doc struct {
 }
 
 type node struct {
-	Slot     uint16 `json:"slot"`
-	Kind     string `json:"kind"`
-	String   string `json:"string,omitempty"`
-	Uint32   uint32 `json:"uint32,omitempty"`
-	Bytes    int    `json:"bytes,omitempty"`
-	Length   int    `json:"length,omitempty"`
-	Children []node `json:"children,omitempty"`
+	Slot       uint16 `json:"slot"`
+	Kind       string `json:"kind"`
+	String     string `json:"string,omitempty"`
+	Uint32     uint32 `json:"uint32,omitempty"`
+	Bytes      int    `json:"bytes,omitempty"`
+	Length     int    `json:"length,omitempty"`
+	StructSize int    `json:"struct_size,omitempty"`
+	Hex        string `json:"hex,omitempty"`
+	Children   []node `json:"children,omitempty"`
 
 	// MaybeUnion is set when this slot looks like the tag half of a union. It
 	// is a guess about shape, not something the buffer records, hence the name.
@@ -197,12 +206,12 @@ type unionNote struct {
 
 // emitJSON walks the buffer through the exported API only. That is deliberate:
 // if the CLI needed anything unexported, the library would be missing it.
-func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool, depth, elems int) {
+func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool, depth, elems int, structs structFlag) {
 	d := doc{
 		Bytes:        len(buf),
 		SizePrefixed: sized,
 		Root:         root.Pos(),
-		Fields:       walk(root, depth, elems, map[uint32]bool{}),
+		Fields:       walk(root, depth, elems, map[uint32]bool{}, nil, structs),
 	}
 	if hasID {
 		d.FileIdentifier = id
@@ -215,7 +224,7 @@ func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool
 	}
 }
 
-func walk(t flatread.Table, depth, elems int, seen map[uint32]bool) []node {
+func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint16, structs structFlag) []node {
 	if depth <= 0 || seen[t.Pos()] {
 		return nil
 	}
@@ -223,6 +232,17 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool) []node {
 
 	var out []node
 	for _, slot := range t.Slots() {
+		here := make([]uint16, len(path)+1)
+		copy(here, path)
+		here[len(path)] = slot
+
+		// Named as structs, so the caller's schema wins over the guess, the
+		// same way it does in the library's own dump.
+		if size := structs.sizeAt(here); size > 0 {
+			out = append(out, structNode(t, slot, size, elems))
+			continue
+		}
+
 		kind := t.Guess(slot)
 		n := node{Slot: slot, Kind: kind.String()}
 
@@ -233,7 +253,7 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool) []node {
 			n.Bytes = len(t.Bytes(slot))
 		case flatread.KindTable:
 			if sub, ok := t.Table(slot); ok {
-				n.Children = walk(sub, depth-1, elems, seen)
+				n.Children = walk(sub, depth-1, elems, seen, here, structs)
 			}
 		case flatread.KindVectorOfTables:
 			count := t.VectorLen(slot)
@@ -246,7 +266,7 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool) []node {
 					n.Children = append(n.Children, node{
 						Slot:     uint16(i),
 						Kind:     "element",
-						Children: walk(sub, depth-1, elems, seen),
+						Children: walk(sub, depth-1, elems, seen, here, structs),
 					})
 				}
 			}
@@ -261,4 +281,27 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool) []node {
 		out = append(out, n)
 	}
 	return out
+}
+
+// structNode renders a vector of fixed-size records.
+//
+// A size that does not fit is reported as a length of 0 rather than falling
+// back to the byte reading, so a script can tell "you named the wrong size"
+// apart from "the vector is empty" by looking at struct_size.
+func structNode(t flatread.Table, slot uint16, size, elems int) node {
+	n := node{Slot: slot, Kind: "structs", StructSize: size}
+
+	count := t.StructVectorLen(slot, size)
+	n.Length = count
+	if count > elems {
+		count = elems
+	}
+	for i := 0; i < count; i++ {
+		n.Children = append(n.Children, node{
+			Slot: uint16(i),
+			Kind: "element",
+			Hex:  fmt.Sprintf("%x", t.StructAt(slot, i, size)),
+		})
+	}
+	return n
 }
