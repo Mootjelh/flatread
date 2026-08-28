@@ -145,6 +145,41 @@ You asked a question about a schema and that is the answer to it. Falling back t
 
 In code it is `DumpOptions.StructSize func(path []uint16) int`, returning 0 for anything that is not a struct vector, with `Table.StructAt` and `Table.StructVectorLen` underneath for reading the elements yourself.
 
+## Looking at one branch
+
+On a payload of any size the dump is all or nothing. `-depth` cuts everywhere at once, so seeing one nested table in full means raising the depth and then reading past everything that came with it. `-slot` takes the same dotted path as `-struct` and starts there instead:
+
+```
+$ flatdump -slot 12.4 payload.bin
+root @0x40 (168 bytes)
+  slot 12  vector   2 tables
+    [0]
+      slot 4   scalar   u32=11 u16=11 u8=11
+    [1]
+      slot 4   scalar   u32=22 u16=22 u8=22
+```
+
+The slots on the way are kept, so the output says where in the buffer you are looking. Below the target the walk carries on as usual, `-depth` and `-elems` included: the flag picks where to start, not how much to print. Depth is still counted from the root, so reaching a long way in wants both.
+
+A path that is not there says so:
+
+```
+$ flatdump -slot 10.99 payload.bin
+root @0x40 (168 bytes)
+  slot 10  table
+  no slot 10.99 in this buffer
+```
+
+Note that slot 10 does exist, so the dump is not empty and judging by output length would call that a hit. An empty dump is indistinguishable from a buffer with nothing in it, which is the confusion this tool exists to remove, so it is answered directly. Under `-json` the same answer is `"only_found": false`.
+
+For selecting rather than focusing, `-json` and jq were always enough and still are:
+
+```bash
+flatdump -json payload.bin | jq '.fields[] | select(.kind == "string")'
+```
+
+In code it is `DumpOptions.Only []uint16`, with `flatread.OnPath` exported for anyone writing their own walk who wants the same rule rather than a second copy of it.
+
 ## The library
 
 ```go

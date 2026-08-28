@@ -5,6 +5,7 @@
 //	curl -s https://example.com/payload | flatdump
 //	flatdump -depth 8 -elems 10 payload.bin
 //	flatdump -struct 6:8 payload.bin
+//	flatdump -slot 12.4 payload.bin
 //	flatdump -json payload.bin | jq '.fields[] | select(.kind == "string")'
 package main
 
@@ -26,6 +27,7 @@ func main() {
 	other := flag.String("diff", "", "compare the given file against `file`, and list the slots that differ")
 	structs := structFlag{}
 	flag.Var(structs, "struct", "read a slot as a vector of structs, as `path:size`, e.g. 6:8 or 4.6:12. Repeatable")
+	only := flag.String("slot", "", "dump only this slot and what is under it, as a dotted `path` from the root, e.g. 12.4")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: flatdump [flags] [file]
 
@@ -35,7 +37,8 @@ With -diff, exits 0 when the two buffers agree, 1 when they differ, and 2 on
 an error, the same way diff(1) does.
 
 Nothing in a buffer distinguishes a vector of structs from a vector of bytes,
-so -struct is how you tell it. The path is slot numbers from the root, dotted.
+so -struct is how you tell it. The path is slot numbers from the root, dotted,
+and -slot takes the same shape to focus the dump on one branch.
 
 flags:
 `)
@@ -53,6 +56,14 @@ flags:
 		fail(err)
 	}
 
+	var onlyPath []uint16
+	if *only != "" {
+		onlyPath, err = parse(*only)
+		if err != nil {
+			fail(fmt.Errorf("-slot: %w", err))
+		}
+	}
+
 	root, err := open(buf, sized)
 	if err != nil {
 		fail(err)
@@ -66,7 +77,7 @@ flags:
 	id, hasID := flatread.FileIdentifier(payload(buf, sized))
 
 	if *asJSON {
-		emitJSON(buf, root, sized, id, hasID, *depth, *elems, structs)
+		emitJSON(buf, root, sized, id, hasID, *depth, *elems, structs, onlyPath)
 		return
 	}
 
@@ -81,6 +92,7 @@ flags:
 		MaxVectorElems: *elems,
 		Annotate:       annotate,
 		StructSize:     structs.sizeAt,
+		Only:           onlyPath,
 	}))
 }
 
@@ -180,7 +192,14 @@ type doc struct {
 	SizePrefixed   bool   `json:"size_prefixed"`
 	FileIdentifier string `json:"file_identifier,omitempty"`
 	Root           uint32 `json:"root"`
-	Fields         []node `json:"fields"`
+
+	// Only and OnlyFound are set when -slot was given. OnlyFound is a pointer
+	// so that false is emitted rather than dropped: an empty fields list means
+	// two different things, and this is what tells them apart.
+	Only      string `json:"only,omitempty"`
+	OnlyFound *bool  `json:"only_found,omitempty"`
+
+	Fields []node `json:"fields"`
 }
 
 type node struct {
@@ -206,15 +225,20 @@ type unionNote struct {
 
 // emitJSON walks the buffer through the exported API only. That is deliberate:
 // if the CLI needed anything unexported, the library would be missing it.
-func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool, depth, elems int, structs structFlag) {
+func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool, depth, elems int, structs structFlag, only []uint16) {
+	reached := false
 	d := doc{
 		Bytes:        len(buf),
 		SizePrefixed: sized,
 		Root:         root.Pos(),
-		Fields:       walk(root, depth, elems, map[uint32]bool{}, nil, structs),
+		Fields:       walk(root, depth, elems, map[uint32]bool{}, nil, structs, only, &reached),
 	}
 	if hasID {
 		d.FileIdentifier = id
+	}
+	if len(only) > 0 {
+		d.Only = key(only)
+		d.OnlyFound = &reached
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -224,7 +248,7 @@ func emitJSON(buf []byte, root flatread.Table, sized bool, id string, hasID bool
 	}
 }
 
-func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint16, structs structFlag) []node {
+func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint16, structs structFlag, only []uint16, reached *bool) []node {
 	if depth <= 0 || seen[t.Pos()] {
 		return nil
 	}
@@ -235,6 +259,13 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint1
 		here := make([]uint16, len(path)+1)
 		copy(here, path)
 		here[len(path)] = slot
+
+		if !flatread.OnPath(only, here) {
+			continue
+		}
+		if len(here) >= len(only) {
+			*reached = true
+		}
 
 		// Named as structs, so the caller's schema wins over the guess, the
 		// same way it does in the library's own dump.
@@ -253,7 +284,7 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint1
 			n.Bytes = len(t.Bytes(slot))
 		case flatread.KindTable:
 			if sub, ok := t.Table(slot); ok {
-				n.Children = walk(sub, depth-1, elems, seen, here, structs)
+				n.Children = walk(sub, depth-1, elems, seen, here, structs, only, reached)
 			}
 		case flatread.KindVectorOfTables:
 			count := t.VectorLen(slot)
@@ -266,7 +297,7 @@ func walk(t flatread.Table, depth, elems int, seen map[uint32]bool, path []uint1
 					n.Children = append(n.Children, node{
 						Slot:     uint16(i),
 						Kind:     "element",
-						Children: walk(sub, depth-1, elems, seen, here, structs),
+						Children: walk(sub, depth-1, elems, seen, here, structs, only, reached),
 					})
 				}
 			}

@@ -38,6 +38,19 @@ type DumpOptions struct {
 	// element of a vector shares one schema, so a path names a position in the
 	// schema rather than in the buffer.
 	StructSize func(path []uint16) int
+
+	// Only, when set, restricts the dump to one slot and everything under it.
+	// It is a slot path from the root, spelled the same way as the one
+	// StructSize is asked about.
+	//
+	// This is where to start, not how much to print. MaxDepth and
+	// MaxVectorElems still apply below it, and MaxDepth is counted from the
+	// root rather than from here, so reaching deep into a buffer wants both.
+	//
+	// A path that is not in the buffer says so rather than printing nothing.
+	// An empty dump is indistinguishable from a buffer with nothing in it, and
+	// telling those two apart is most of what this package is for.
+	Only []uint16
 }
 
 func (o DumpOptions) maxDepth() int {
@@ -75,11 +88,59 @@ func DumpWith(buf []byte, opts DumpOptions) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "root @0x%x (%d bytes)\n", root.pos, len(buf))
-	dumpTable(&b, root, 1, map[uint32]bool{}, opts, nil)
+
+	var reached bool
+	dumpTable(&b, root, 1, map[uint32]bool{}, opts, nil, &reached)
+
+	// Nothing under the requested path, so say which path, rather than hand
+	// back a header and a blank line that reads like an empty buffer.
+	//
+	// Reaching it is tracked rather than measured by whether anything was
+	// printed, because the breadcrumb lines above the target print either way:
+	// asking for 10.99 in a buffer whose slot 10 exists would otherwise look
+	// like a hit.
+	if len(opts.Only) > 0 && !reached {
+		fmt.Fprintf(&b, "  no slot %s in this buffer\n", pathString(opts.Only))
+	}
 	return b.String()
 }
 
-func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opts DumpOptions, path []uint16) {
+// pathString renders a slot path the way the callers spell it, so a message
+// about slot 4.6 can be pasted straight back onto the command line.
+func pathString(path []uint16) string {
+	parts := make([]string, len(path))
+	for i, s := range path {
+		parts[i] = fmt.Sprint(s)
+	}
+	return strings.Join(parts, ".")
+}
+
+// OnPath reports whether the slot at path is on the way to only, or inside it.
+// An empty only matches everything.
+//
+// This is the rule [DumpOptions.Only] follows: above the target, only the one
+// branch leading to it; at or below it, everything, because Only picks a
+// starting point and not a budget.
+//
+// It is exported because a caller writing its own walk, as cmd/flatdump does
+// for its JSON output, needs the same answer. A second copy of a rule like this
+// is how two views of one buffer quietly start disagreeing.
+func OnPath(only, path []uint16) bool {
+	if len(only) == 0 {
+		return true
+	}
+	if len(path) > len(only) {
+		path = path[:len(only)]
+	}
+	for i, s := range path {
+		if only[i] != s {
+			return false
+		}
+	}
+	return true
+}
+
+func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opts DumpOptions, path []uint16, reached *bool) {
 	// The seen set is not just an optimisation. Nothing stops a buffer, whether
 	// by corruption or by design, from containing an offset cycle, and without
 	// this the walk would not terminate on one.
@@ -102,6 +163,15 @@ func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opt
 		here := make([]uint16, len(path)+1)
 		copy(here, path)
 		here[len(path)] = slot
+
+		// Above the target, follow only the branch that leads to it. The slots
+		// on the way are still printed, so the output says where it is.
+		if !OnPath(opts.Only, here) {
+			continue
+		}
+		if len(here) >= len(opts.Only) {
+			*reached = true
+		}
 
 		// Asked before Guess is consulted, and it wins. The caller has a schema
 		// and Guess has only bytes, so on the one question bytes cannot answer
@@ -131,7 +201,7 @@ func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opt
 			for i := 0; i < limit; i++ {
 				if sub, ok := t.TableAt(slot, i); ok {
 					fmt.Fprintf(b, "%s  [%d]\n", ind, i)
-					dumpTable(b, sub, depth+2, seen, opts, here)
+					dumpTable(b, sub, depth+2, seen, opts, here, reached)
 				}
 			}
 			if n > limit {
@@ -141,7 +211,7 @@ func dumpTable(b *strings.Builder, t Table, depth int, seen map[uint32]bool, opt
 		case KindTable:
 			fmt.Fprintf(b, "%sslot %-3d table\n", ind, slot)
 			if sub, ok := t.Table(slot); ok {
-				dumpTable(b, sub, depth+1, seen, opts, here)
+				dumpTable(b, sub, depth+1, seen, opts, here, reached)
 			}
 
 		default:

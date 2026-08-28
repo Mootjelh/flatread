@@ -208,3 +208,99 @@ func keys(m any) []string {
 	sort.Strings(out)
 	return out
 }
+
+// --- focusing on one branch --------------------------------------------------
+
+func TestDumpOnly(t *testing.T) {
+	full := Dump(sample())
+	// The control. If these were not in the full dump, the assertions below
+	// would pass on a dump that lost them for some other reason.
+	for _, want := range []string{`slot 6   string   "hello"`, "slot 10  table"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("the full dump is missing %q, so this test cannot mean anything\n---\n%s", want, full)
+		}
+	}
+
+	out := DumpWith(sample(), DumpOptions{Only: []uint16{10}})
+
+	if !strings.Contains(out, "slot 10  table") {
+		t.Errorf("Dump(Only 10) lost the slot that was asked for\n---\n%s", out)
+	}
+	if !strings.Contains(out, "u32=7") {
+		t.Errorf("Dump(Only 10) did not descend into it\n---\n%s", out)
+	}
+	for _, gone := range []string{`"hello"`, "slot 12", "u32=4242"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("Dump(Only 10) still shows %q\n---\n%s", gone, out)
+		}
+	}
+}
+
+// The slots on the way to the target are kept, so the output says where in the
+// buffer you are looking.
+func TestDumpOnlyKeepsTheSlotsOnTheWay(t *testing.T) {
+	out := DumpWith(sample(), DumpOptions{Only: []uint16{12, 4}})
+
+	if !strings.Contains(out, "slot 12  vector   2 tables") {
+		t.Errorf("Dump(Only 12.4) dropped the vector it descended through\n---\n%s", out)
+	}
+	if !strings.Contains(out, "u32=11") || !strings.Contains(out, "u32=22") {
+		t.Errorf("Dump(Only 12.4) did not reach slot 4 of both elements\n---\n%s", out)
+	}
+	if strings.Contains(out, `"hello"`) {
+		t.Errorf("Dump(Only 12.4) still shows an unrelated branch\n---\n%s", out)
+	}
+}
+
+// A path that is not there says so. An empty dump reads exactly like a buffer
+// with nothing in it, and telling those apart is most of what this is for.
+func TestDumpOnlyReportsAPathThatIsNotThere(t *testing.T) {
+	out := DumpWith(sample(), DumpOptions{Only: []uint16{99}})
+	if !strings.Contains(out, "no slot 99 in this buffer") {
+		t.Errorf("Dump(Only 99) = %q, want it to say the path is not there", out)
+	}
+}
+
+// The harder half: slot 10 exists and 10.99 does not, so a breadcrumb line is
+// printed and the dump is not empty. Deciding on output length would call this
+// a hit.
+func TestDumpOnlyReportsAMissingLeafUnderAnExistingParent(t *testing.T) {
+	out := DumpWith(sample(), DumpOptions{Only: []uint16{10, 99}})
+
+	if !strings.Contains(out, "slot 10  table") {
+		t.Errorf("expected the parent to still be shown\n---\n%s", out)
+	}
+	if !strings.Contains(out, "no slot 10.99 in this buffer") {
+		t.Errorf("Dump(Only 10.99) = %q, want it to say the leaf is not there", out)
+	}
+}
+
+func TestDumpOnlyEmptyMeansEverything(t *testing.T) {
+	full := Dump(sample())
+	out := DumpWith(sample(), DumpOptions{Only: nil})
+	if out != full {
+		t.Errorf("an empty Only changed the dump\n got %s\nwant %s", out, full)
+	}
+}
+
+func TestOnPath(t *testing.T) {
+	cases := []struct {
+		only, path []uint16
+		want       bool
+	}{
+		{nil, []uint16{4}, true},              // no filter takes everything
+		{[]uint16{10}, []uint16{10}, true},    // the target itself
+		{[]uint16{10}, []uint16{10, 4}, true}, // inside it
+		{[]uint16{10}, []uint16{4}, false},    // a sibling
+		{[]uint16{10, 4}, []uint16{10}, true}, // on the way to it
+		{[]uint16{10, 4}, []uint16{10, 6}, false},
+		{[]uint16{10, 4}, []uint16{10, 4, 8}, true},
+		{[]uint16{10}, nil, true}, // the root is on the way to everything
+	}
+
+	for _, c := range cases {
+		if got := OnPath(c.only, c.path); got != c.want {
+			t.Errorf("OnPath(%v, %v) = %v, want %v", c.only, c.path, got, c.want)
+		}
+	}
+}

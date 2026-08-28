@@ -42,30 +42,32 @@ func (f structFlag) Set(v string) error {
 		return fmt.Errorf("element size must be a positive number of bytes (got %q)", sizeStr)
 	}
 
-	if path == "" {
-		return fmt.Errorf("want at least one slot number before the colon (got %q)", v)
-	}
-	for _, part := range strings.Split(path, ".") {
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 || n > 65535 {
-			return fmt.Errorf("slot numbers must be between 0 and 65535 (got %q)", part)
-		}
+	slots, err := parse(path)
+	if err != nil {
+		return err
 	}
 
-	f[key(parse(path))] = size
+	f[key(slots)] = size
 	return nil
 }
 
-// parse turns "4.6" into {4, 6}. Set has already checked every part, so this
-// cannot fail by the time it runs.
-func parse(path string) []uint16 {
+// parse turns "4.6" into {4, 6}, rejecting anything that is not a dotted run
+// of slot numbers. Both -struct and -slot go through it, so the two flags
+// cannot end up accepting different spellings of a path.
+func parse(path string) ([]uint16, error) {
+	if path == "" {
+		return nil, fmt.Errorf("want at least one slot number (got %q)", path)
+	}
 	parts := strings.Split(path, ".")
 	out := make([]uint16, 0, len(parts))
 	for _, p := range parts {
-		n, _ := strconv.Atoi(p)
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || n > 65535 {
+			return nil, fmt.Errorf("slot numbers must be between 0 and 65535 (got %q)", p)
+		}
 		out = append(out, uint16(n))
 	}
-	return out
+	return out, nil
 }
 
 // key renders a path as the map key. The flag and the lookup both go through

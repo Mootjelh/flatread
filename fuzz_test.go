@@ -51,6 +51,17 @@ func FuzzReader(f *testing.F) {
 			})
 		}
 
+		// Only is a path a caller typed, so it can name slots that are not
+		// there, go deeper than the buffer does, or be longer than any table.
+		for _, only := range [][]uint16{
+			{0}, {4}, {65535}, {4, 6}, {4, 6, 8, 10, 12, 14},
+		} {
+			_ = DumpWith(data, DumpOptions{Only: only})
+			_ = OnPath(only, nil)
+			_ = OnPath(nil, only)
+			_ = OnPath(only, only)
+		}
+
 		// Diff walks two buffers at once, so its cycle guard is keyed on the
 		// pair. Compare arbitrary input against a known-good buffer both ways
 		// round, and against itself.
