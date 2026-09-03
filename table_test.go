@@ -879,3 +879,113 @@ func TestUnionHintDoesNotFireOnOrdinaryFields(t *testing.T) {
 		}
 	}
 }
+
+// nestedNearItsVtable builds a root whose only field is a nested table sitting
+// close to its own vtable, so the soffset is small.
+//
+// That is what a real encoder produces and it is the case Guess used to get
+// wrong. The soffset is read where a vector keeps its length, and a small one
+// fits the buffer, so the length reading wins and the table is reported as a
+// short byte vector. sample() above avoids this by accident: its nested table
+// is far enough from its vtable that the implied length runs off the end.
+//
+//	0   root uoffset
+//	4   root vtable      size 6, table 8, slot 4 at +4
+//	12  root table       soffset 8, then the offset to the nested table
+//	20  nested vtable    size 8, table 12, slots at +4 and +8
+//	28  nested table     soffset 8, then two u32 fields
+func nestedNearItsVtable() []byte {
+	b := make([]byte, 40)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 12)
+
+	u16(4, 6)
+	u16(6, 8)
+	u16(8, 4)
+
+	u32(12, uint32(12-4))
+	u32(16, uint32(28-16))
+
+	u16(20, 8)
+	u16(22, 12)
+	u16(24, 4)
+	u16(26, 8)
+
+	u32(28, uint32(28-20))
+	u32(32, 7)
+	u32(36, 9)
+
+	return b
+}
+
+// TestGuessFindsANestedTableWithASmallSoffset is the regression for #5.
+//
+// The control comes first. Without it the assertion below can pass for the
+// wrong reason: if the fixture were malformed enough that the length reading
+// never applied, Guess would reach the table check the old way and the test
+// would say nothing about the bug.
+func TestGuessFindsANestedTableWithASmallSoffset(t *testing.T) {
+	buf := nestedNearItsVtable()
+
+	// Control: the length reading really does apply here, which is what makes
+	// this the hard case. The soffset is 8 and the payload it implies is inside
+	// the buffer.
+	const nested = 28
+	if n := binary.LittleEndian.Uint32(buf[nested:]); n != 8 || nested+4+int(n) > len(buf) {
+		t.Fatalf("fixture does not exercise the bug: implied length %d at %d in a %d-byte buffer", n, nested, len(buf))
+	}
+
+	root, err := Root(buf)
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+
+	if got := root.Guess(4); got != KindTable {
+		t.Errorf("Guess(4) = %v, want %v: the soffset was read as a vector length", got, KindTable)
+	}
+
+	// And it has to be readable as one, not merely labelled.
+	sub, ok := root.Table(4)
+	if !ok {
+		t.Fatal("Table(4) did not resolve")
+	}
+	if got := sub.Uint32(4); got != 7 {
+		t.Errorf("nested slot 4 = %d, want 7", got)
+	}
+}
+
+// TestGuessStillCallsAShortByteVectorBytes is the other half of #5 and the one
+// that matters if the table check is ever loosened.
+//
+// Preferring a table costs false positives on short vectors, since a handful of
+// arbitrary bytes can read as a small vtable. A vector that does not look like
+// a table has to keep reading as bytes.
+func TestGuessStillCallsAShortByteVectorBytes(t *testing.T) {
+	b := make([]byte, 40)
+	u32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(b[at:], v) }
+	u16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(b[at:], v) }
+
+	u32(0, 12)
+	u16(4, 6)
+	u16(6, 8)
+	u16(8, 4)
+	u32(12, uint32(12-4))
+	u32(16, uint32(24-16))
+
+	// A 12-byte payload with a zero in it, so it is neither printable nor
+	// roaring, and whose leading word points nowhere a vtable could be.
+	u32(24, 12)
+	u32(28, 0x00010203)
+	u32(32, 0x00040506)
+	u32(36, 0x00070809)
+
+	root, err := Root(b)
+	if err != nil {
+		t.Fatalf("Root: %v", err)
+	}
+	if got := root.Guess(4); got != KindBytes {
+		t.Errorf("Guess(4) = %v, want %v: a byte vector was taken for a table", got, KindBytes)
+	}
+}
